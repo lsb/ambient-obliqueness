@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nearest Sentence Finder</title>
+  <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin-top: 50px;
+    }
+    #nearestSentence {
+      font-size: 1.5em;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <h1>Nearest Sentence Finder</h1>
+  <p>Sentence closest to the spoken words:</p>
+  <div id="nearestSentence">Loading...</div>
+
+  <script>
+    // Check for browser support
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Your browser does not support the Web Speech API. Please use a compatible browser.");
+    } else {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      let wordBuffer = [];
+      const bufferDuration = 30 * 1000; // 30 seconds
+      const nearestSentenceElement = document.getElementById('nearestSentence');
+
+      // Predefined sentences
+      const sampleSentences = ['person', 'man', 'woman', 'camera', 'tv'];
+      let sampleEmbeddings = [];
+      let pipeline;
+
+      // Load the pipeline and compute embeddings for sample sentences
+      async function initializePipeline() {
+        pipeline = await transformers.pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+        sampleEmbeddings = await Promise.all(
+          sampleSentences.map(sentence => pipeline(sentence).then(embedding => embedding[0]))
+        );
+        nearestSentenceElement.textContent = 'Model loaded. Start speaking!';
+      }
+
+      // Compute Euclidean distance
+      function euclideanDistance(vec1, vec2) {
+        return Math.sqrt(vec1.reduce((sum, val, i) => sum + Math.pow(val - vec2[i], 2), 0));
+      }
+
+      // Find the nearest sentence
+      function findNearestSentence(transcriptEmbedding) {
+        let nearestSentence = '';
+        let minDistance = Infinity;
+
+        sampleEmbeddings.forEach((embedding, index) => {
+          const distance = euclideanDistance(transcriptEmbedding, embedding);
+          if (distance < minDistance) {
+            minDistance = distance;
+            nearestSentence = sampleSentences[index];
+          }
+        });
+
+        return nearestSentence;
+      }
+
+      // Start speech recognition
+      recognition.start();
+
+      recognition.onresult = async (event) => {
+        const transcript = Array.from(event.results)
+          .map(result => result[0].transcript)
+          .join(' ');
+
+        const timestamp = Date.now();
+
+        // Add transcript to the buffer with timestamps
+        wordBuffer.push({ transcript, timestamp });
+
+        // Remove transcripts older than 30 seconds
+        wordBuffer = wordBuffer.filter(item => timestamp - item.timestamp <= bufferDuration);
+
+        // Combine all transcripts in the buffer
+        const combinedTranscript = wordBuffer.map(item => item.transcript).join(' ');
+
+        // Compute embedding for the combined transcript
+        if (pipeline) {
+          const transcriptEmbedding = await pipeline(combinedTranscript).then(embedding => embedding[0]);
+
+          // Find and display the nearest sentence
+          const nearestSentence = findNearestSentence(transcriptEmbedding);
+          nearestSentenceElement.textContent = nearestSentence;
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          alert('Microphone access is blocked. Please allow microphone access and reload the page.');
+        }
+      };
+
+      recognition.onend = () => {
+        console.warn('Speech recognition stopped. Restarting...');
+        recognition.start(); // Restart recognition if it stops
+      };
+
+      // Initialize the pipeline
+      initializePipeline();
+    }
+  </script>
+</body>
+</html>
