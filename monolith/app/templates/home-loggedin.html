@@ -1,0 +1,71 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Home - Audio Recorder</title>
+  <meta name="csrf-token" content="{{ csrf_token }}">
+</head>
+<body>
+  <h2>Welcome, {{ request.user.username }}</h2>
+  <p><a href="{{ logout_url }}">log out</a> </p>
+  <p>Your conversation may continue automatically.</p>
+  <div id="server-response"></div>
+  
+  <script type="module">
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    let conversationId = "{{ conversation_id }}";
+    
+    // 1. Request microphone access
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    
+    // 2. Set up AudioContext and load the meter processor from static files
+    const ctx = new AudioContext({ sampleRate: 16000 });
+    await ctx.audioWorklet.addModule("{% static 'meter-processor.js' %}");
+    
+    const source = ctx.createMediaStreamSource(stream);
+    const meter = new AudioWorkletNode(ctx, 'meter');
+    source.connect(meter);
+    
+    // Optional: define an encoder for audio data (for demo, use binary data)
+    const mu6encoder = (x => Math.floor((Math.sign(x) * Math.log1p(63 * Math.abs(x)) / Math.log1p(63) + 1) / 2 * 63 + 0.5));
+    const mupalette = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
+    
+    // 3. Receive stats from the meter processor and post data to the API endpoint
+    meter.port.onmessage = async ({ data: { max, sd, frame } }) => {
+      console.log(`max = ${max.toFixed(4)}  sd = ${sd.toFixed(4)}`);
+      const mu6frame = frame.map(i => mu6encoder(i));
+      const mu6string = mu6frame.map(x => mupalette[x]).join('');
+      console.log({ mu6string, mu6frame, frame });
+      
+      // Prepare form data to send
+      const clientTimestamp = new Date().toISOString();
+      const formData = new FormData();
+      
+      formData.append('audio_data', mu6string);
+      formData.append('client_timestamp', clientTimestamp);
+      formData.append('conversation_id', conversationId);
+      
+      try {
+        const response = await fetch('/api/upload/', {
+          method: 'POST',
+          body: formData,
+          credentials: 'include',
+          headers: {
+            'X-CSRFToken': csrfToken
+          }
+        });
+        const result = await response.json();
+        console.log(result);
+      } catch (err) {
+        console.error("Upload failed", err);
+      }
+    };
+    
+    // Resume AudioContext if suspended (e.g., in Safari)
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+  </script>
+</body>
+</html>

@@ -82,6 +82,10 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'app', 'static'),
+]
+
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 
 # Logging configuration to output logs to console.
