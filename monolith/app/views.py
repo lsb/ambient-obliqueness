@@ -10,6 +10,7 @@ import datetime
 import uuid
 
 from .models import AudioFrame
+from app.models import Transcription
 
 User = get_user_model()
 
@@ -94,4 +95,28 @@ def upload_audio_frame(request):
 
 def meter_processor(request):
     return render(request, 'meter-processor.js', content_type='application/javascript')
+
+@login_required
+def conversation_analysis(request):
+    conversation_id_str = request.GET.get('conversation_id')
+    if not conversation_id_str:
+        return HttpResponseBadRequest("Missing conversation_id.")
+    try:
+        conversation_id = uuid.UUID(conversation_id_str)
+    except ValueError:
+        return HttpResponseBadRequest("Invalid conversation_id format.")
+
+    transcriptions = Transcription.objects.filter(
+        audio_frame__conversation_id=conversation_id
+    ).order_by('-audio_frame__client_timestamp')[:60]
+
+    results = []
+    for t in transcriptions:
+        results.append({
+            'audio_frame_id': str(t.audio_frame_id),
+            'fast_transcription': t.fast_transcription,
+            'slow_transcription': t.slow_transcription,
+            'client_timestamp': t.audio_frame.client_timestamp.isoformat(),
+        })
+    return JsonResponse({'transcriptions': results})
 

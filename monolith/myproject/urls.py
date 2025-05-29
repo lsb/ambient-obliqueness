@@ -9,6 +9,7 @@ urlpatterns = [
     path('logout/', views.logout_view, name='logout'),
     path('home/', views.home_view, name='home'),
     path('api/upload/', views.upload_audio_frame, name='upload_audio_frame'),
+    path('api/analysis/', views.conversation_analysis, name='conversation_analysis'),
     path('static/meter-processor.js', views.meter_processor, name='meter_processor'),
     path('', views.home_view, name='home'),
 ]

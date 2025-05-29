@@ -5,13 +5,25 @@
   <meta charset="utf-8" />
   <title>Home - Audio Recorder</title>
   <meta name="csrf-token" content="{{ csrf_token }}">
+  <style>
+    /* Optional: basic styling for the analysis container */
+    #analysis-container ul {
+      list-style: disc;
+      padding-left: 20px;
+    }
+  </style>
 </head>
 <body>
   <h2>Welcome, {{ request.user.username }}</h2>
-  <p><a href="{{ logout_url }}">log out</a> </p>
+  <p><a href="{{ logout_url }}">log out</a></p>
   <p>Your conversation may continue automatically.</p>
   <div id="server-response"></div>
   
+  <!-- New container for conversation analysis -->
+  <div id="analysis-container">
+    Loading conversation analysis...
+  </div>
+
   <script type="module">
     const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
     let conversationId = "{{ conversation_id }}";
@@ -66,6 +78,52 @@
     if (ctx.state === 'suspended') {
       await ctx.resume();
     }
+    
+    // ANALYSIS: Fetch conversation analysis every 0.5 seconds
+    const analysisContainer = document.getElementById("analysis-container");
+    
+    const smoothStep = function (x, y, a) {
+      return x + (y - x) * a * a * (3 - 2 * a);
+    };
+    
+    async function fetchAnalysis() {
+      try {
+        const response = await fetch(`/api/analysis/?conversation_id=${conversationId}`, {
+          credentials: 'include'
+        });
+        const data = await response.json();
+        const transcriptions = data.transcriptions;
+        // Get the first ten transcriptions (if available)
+        const firstTen = transcriptions.slice(0, 10);
+        
+        // Build the bulleted list
+        if (!firstTen.length) {
+          analysisContainer.innerHTML = "<p>No transcriptions yet.</p>";
+          return;
+        }
+        
+        const ul = document.createElement('ul');
+        const startOpacity = 1.0;
+        const endOpacity = 0.0;
+        
+        firstTen.forEach((t, index, arr) => {
+            const li = document.createElement('li');
+            li.textContent = t.fast_transcription || "...";
+            const opacity = smoothStep(startOpacity, endOpacity, index / arr.length);
+            li.style.opacity = opacity;
+            ul.appendChild(li);
+        });
+        analysisContainer.innerHTML = '';  // Clear previous content
+        analysisContainer.appendChild(ul);
+      } catch (err) {
+        console.error("Failed to fetch analysis", err);
+      }
+    }
+    
+    // Fetch analysis every 0.5 seconds
+    setInterval(fetchAnalysis, 500);
+    // Initial call
+    fetchAnalysis();
   </script>
 </body>
 </html>

@@ -1,16 +1,17 @@
+import torch
+from transformers import pipeline
+pipe = pipeline("automatic-speech-recognition", model="openai/whisper-tiny", device="cpu", torch_dtype=torch.float32)
+
 import django
 django.setup()
 from celery import Celery, shared_task
 import numpy as np
-import torch
 import math
-from transformers import pipeline
 from app.models import AudioFrame, Transcription
 import time
 
-app = Celery('myproject')
+app = Celery('myproject', broker='redis://localhost:6379/0')
 
-pipe = pipeline("automatic-speech-recognition", model="openai/whisper-tiny", device="cpu", torch_dtype=torch.float32)
 # bigpipe = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3-turbo", device="cpu", torch_dtype=torch.float32)
 
 mu6palette = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
