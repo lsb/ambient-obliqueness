@@ -8,9 +8,9 @@ from worker import transcribe_audio_frame  # import the Celery task
 
 import datetime
 import uuid
+import json
 
-from .models import AudioFrame
-from app.models import Transcription
+from .models import AudioFrame, Transcription, ConversationAnalysis
 
 User = get_user_model()
 
@@ -118,5 +118,13 @@ def conversation_analysis(request):
             'slow_transcription': t.slow_transcription,
             'client_timestamp': t.audio_frame.client_timestamp.isoformat(),
         })
-    return JsonResponse({'transcriptions': results})
+    # Include the latest summary analysis in the response
+    summary_analysis = ConversationAnalysis.objects.filter(
+        conversation_id=conversation_id,
+        analysis_type="summary"
+    ).order_by('-id').first()
+    analysis = summary_analysis.analysis
+    print("Analysis:", analysis)
+    summary = json.loads(analysis).get("summary") if summary_analysis else ""
+    return JsonResponse({'transcriptions': results, 'summary': summary})
 

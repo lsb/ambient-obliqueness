@@ -1,18 +1,25 @@
 import torch
 from transformers import pipeline
-pipe = pipeline("automatic-speech-recognition", model="openai/whisper-tiny", device="cpu", torch_dtype=torch.float32)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+fastasr = pipeline("automatic-speech-recognition", model="openai/whisper-tiny", device=device, torch_dtype=torch.float32)
+slowasr = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3-turbo", device=device, torch_dtype=torch.float32)
+
+# New: text generation pipeline for summarization
+from transformers import pipeline as text_pipeline
+summarizer = text_pipeline("text-generation", model="Qwen/Qwen3-0.6B", device=device, torch_dtype=torch.float32)
 
 import django
 django.setup()
 from celery import Celery, shared_task
 import numpy as np
 import math
-from app.models import AudioFrame, Transcription
+from app.models import Transcription, ConversationAnalysis, AudioFrame
+import json
+import datetime
+
 import time
 
 app = Celery('myproject', broker='redis://localhost:6379/0')
-
-# bigpipe = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3-turbo", device="cpu", torch_dtype=torch.float32)
 
 mu6palette = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
 mu6palette_to_int = np.zeros((128,), dtype=np.float32) / 0.0 # all nans, for error detection
@@ -50,8 +57,8 @@ def transcribe_audio_frame(audio_frame_id):
         # create a null transcription
         Transcription.objects.create(
             audio_frame=audio_frame,
-            fast_transcription=None,
-            slow_transcription=None,
+            fast_transcription="",
+            slow_transcription="",
         )
         return "Not the most recent audio frame for this conversation_id"
 
@@ -75,15 +82,63 @@ def transcribe_audio_frame(audio_frame_id):
 
     transcription_result = pipe(audio_data)['text']
     time_audio_data_transcribed = time.time()
-    # big_transcription_result = bigpipe(audio_data)
     print("Transcription result:", transcription_result)
     
     # For demo, use the same result for both fast and slow transcriptions.
     Transcription.objects.create(
         audio_frame=audio_frame,
         fast_transcription=str(transcription_result),
-        slow_transcription=None, # str(big_transcription_result),
+        slow_transcription="",
     )
     time_transcript_created = time.time()
     print("Transcription time was", int(1000 * (time_audio_data_transcribed - time_audio_data_decoded)), "ms of", int(1000 * (time_transcript_created - time_start)), "ms total")
+    
+    # Only trigger a new summary if no summary exists for audio frames in the last 10 seconds
+    time_threshold = audio_frame.client_timestamp - datetime.timedelta(seconds=10)
+    recent_summaries = ConversationAnalysis.objects.filter(
+        conversation_id=audio_frame.conversation_id,
+        analysis_type="summary",
+        audio_frame__client_timestamp__gte=time_threshold,
+        audio_frame__client_timestamp__lte=audio_frame.client_timestamp,
+    )
+    if recent_summaries.count() == 0:
+        summarize_conversation.delay(str(audio_frame.conversation_id))
+    
     return "Transcription completed"
+
+
+@shared_task
+def summarize_conversation(conversation_id):
+    transcriptions = Transcription.objects.filter(
+        audio_frame__conversation_id=conversation_id,
+        fast_transcription__isnull=False
+    ).order_by('-audio_frame__client_timestamp')
+    # Select one out of every 20 non-null transcriptions (up to 1000)
+    selected = reversed(transcriptions[::20][:1000])
+    texts = [t.fast_transcription for t in selected]
+    if not texts:
+        return "No valid transcriptions for summary"
+    # create a json blob of the texts, to avoid injection attacks
+    text_json = json.dumps(texts, ensure_ascii=False)
+    query = "".join([
+        "This conversation is currently being transcribed, and I want to summarize it, in JSON format.",
+        "The format of this conversation transcript is thirty second snippets that overlap. The audio has been truncated, so the words are more accurate in the middle than at the start and end of each snippet.",
+        "Please think about the conversation as a whole, and then summarize. These are the conversation fragments, as a JSON array:",
+        "\n","\n",
+        json.dumps(texts, ensure_ascii=False),
+        "\n","\n",
+        "Please only return the JSON object, with a single key 'summary' that contains the summary of the conversation, with no other text or formatting.",
+    ])
+    summary_result = summarizer(
+        [{"role": "user", "content": query}, {"role": "assistant", "content": '{"summary":'}],
+        max_new_tokens=40000,
+    )[0]['generated_text'][-1]['content']
+    print(f"Summary result: {summary_result}")
+    latest_audio_frame = transcriptions.first().audio_frame if transcriptions.exists() else None
+    ConversationAnalysis.objects.update_or_create(
+        conversation_id=conversation_id,
+        analysis_type="summary",
+        defaults={"audio_frame": latest_audio_frame, "analysis": summary_result}
+    )
+    return "Summary analysis completed"
+

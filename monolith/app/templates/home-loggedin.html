@@ -18,6 +18,12 @@
   <p><a href="{{ logout_url }}">log out</a></p>
   <p>Your conversation may continue automatically.</p>
   <div id="server-response"></div>
+
+  <!-- Conversation Summary Box -->
+  <div id="conversation-summary" style="border: 2px solid #f39c12; padding: 10px; margin: 10px 0;">
+    <strong>Conversation Summary:</strong>
+    <div id="summary-text">Loading summary...</div>
+  </div>
   
   <!-- New container for conversation analysis -->
   <div id="analysis-container">
@@ -85,7 +91,7 @@
     const smoothStep = function (x, y, a) {
       return x + (y - x) * a * a * (3 - 2 * a);
     };
-    
+
     async function fetchAnalysis() {
       try {
         const response = await fetch(`/api/analysis/?conversation_id=${conversationId}`, {
@@ -93,28 +99,26 @@
         });
         const data = await response.json();
         const transcriptions = data.transcriptions;
-        // Get the first ten transcriptions (if available)
         const firstTen = transcriptions.slice(0, 10);
-        
-        // Build the bulleted list
         if (!firstTen.length) {
-          analysisContainer.innerHTML = "<p>No transcriptions yet.</p>";
-          return;
-        }
-        
-        const ul = document.createElement('ul');
-        const startOpacity = 1.0;
-        const endOpacity = 0.0;
-        
-        firstTen.forEach((t, index, arr) => {
+          document.getElementById("analysis-container").innerHTML = "<p>No transcriptions yet.</p>";
+        } else {
+          const ul = document.createElement('ul');
+          const startOpacity = 1.0;
+          const endOpacity = 0.0;
+          firstTen.forEach((t, index, arr) => {
             const li = document.createElement('li');
             li.textContent = t.fast_transcription || "...";
-            const opacity = smoothStep(startOpacity, endOpacity, index / arr.length);
+            const opacity = startOpacity + (endOpacity - startOpacity) * (index / arr.length);
             li.style.opacity = opacity;
             ul.appendChild(li);
-        });
-        analysisContainer.innerHTML = '';  // Clear previous content
-        analysisContainer.appendChild(ul);
+          });
+          const analysisContainer = document.getElementById("analysis-container");
+          analysisContainer.innerHTML = '';
+          analysisContainer.appendChild(ul);
+        }
+        // Update the summary box with the latest summary
+        document.getElementById('summary-text').textContent = data.summary || "No summary available";
       } catch (err) {
         console.error("Failed to fetch analysis", err);
       }

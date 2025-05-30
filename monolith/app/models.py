@@ -17,3 +17,15 @@ class Transcription(models.Model):
     audio_frame = models.OneToOneField(AudioFrame, on_delete=models.CASCADE, related_name="transcription")
     fast_transcription = models.TextField(blank=True)
     slow_transcription = models.TextField(blank=True)
+
+class ConversationAnalysis(models.Model):
+    conversation_id = models.UUIDField(editable=False, db_index=True)
+    analysis_type = models.CharField(max_length=100)
+    audio_frame = models.ForeignKey(AudioFrame, on_delete=models.CASCADE)
+    analysis = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.analysis_type} analysis for {self.conversation_id}"
+
+# when changing this file, rerun making migrations
