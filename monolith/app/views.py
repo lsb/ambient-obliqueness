@@ -4,7 +4,7 @@ from django.http import HttpResponse, JsonResponse, HttpResponseBadRequest
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
-from worker import transcribe_audio_frame  # import the Celery task
+from worker import transcribe_audio_frame, summarize_conversation  # import the Celery task
 
 import datetime
 import uuid
@@ -118,12 +118,16 @@ def conversation_analysis(request):
             'slow_transcription': t.slow_transcription,
             'client_timestamp': t.audio_frame.client_timestamp.isoformat(),
         })
-    # Include the latest summary analysis in the response
+    # Include the latest summary analysis in the response, for the latest summary that is not null
     summary_analysis = ConversationAnalysis.objects.filter(
         conversation_id=conversation_id,
-        analysis_type="summary"
+        analysis_type="summary",
+        analysis__isnull=False
     ).order_by('-id').first()
-    analysis = summary_analysis.analysis
+    analysis = summary_analysis.analysis if summary_analysis else None
+    if analysis is None:
+        analysis = json.dumps({"summary": "No summary available."})
+
     print("Analysis:", analysis)
     summary = json.loads(analysis).get("summary") if summary_analysis else ""
     return JsonResponse({'transcriptions': results, 'summary': summary})

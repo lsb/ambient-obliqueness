@@ -15,14 +15,14 @@ class AudioFrame(models.Model):
 
 class Transcription(models.Model):
     audio_frame = models.OneToOneField(AudioFrame, on_delete=models.CASCADE, related_name="transcription")
-    fast_transcription = models.TextField(blank=True)
-    slow_transcription = models.TextField(blank=True)
+    fast_transcription = models.TextField(null=True,blank=True)
+    slow_transcription = models.TextField(null=True,blank=True)
 
 class ConversationAnalysis(models.Model):
     conversation_id = models.UUIDField(editable=False, db_index=True)
     analysis_type = models.CharField(max_length=100)
     audio_frame = models.ForeignKey(AudioFrame, on_delete=models.CASCADE)
-    analysis = models.JSONField()
+    analysis = models.JSONField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
