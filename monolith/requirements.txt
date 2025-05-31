@@ -1,6 +1,7 @@
 Django #>=3.2
 celery[redis]
 flower
+modal
 
 
 torch
