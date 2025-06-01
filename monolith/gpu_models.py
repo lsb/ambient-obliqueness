@@ -11,6 +11,7 @@ inference_image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "numpy",
     "torch",
     "transformers",
+    "optimum-quanto",
 ).env(
     {"HF_HUB_CACHE": MODEL_CACHE_PATH, "HF_HUB_ENABLE_HF_TRANSFER": "1"}
 )
@@ -19,14 +20,14 @@ model_cache = modal.Volume.from_name("hf-hub-cache", create_if_missing=True)
 ASR_MODEL_NAME = "openai/whisper-large-v3-turbo"
 MODEL_REVISION = "main"
 
-LLM_MODEL_NAME = "Qwen/Qwen3-1.7B"
+LLM_MODEL_NAME = "Qwen/Qwen3-8B"
 MODEL_REVISION = "main"
 
 def setup():
-    from transformers import pipeline
+    from transformers import pipeline, QuantoConfig
     import torch
-    asrpipe = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3-turbo", device="cuda", torch_dtype=torch.float16) # native dtype
-    llmpipe = pipeline("text-generation", model="Qwen/Qwen3-8B", device="cuda", torch_dtype=torch.bfloat16) # native dtype
+    asrpipe = pipeline("automatic-speech-recognition", model=ASR_MODEL_NAME, device="cuda", torch_dtype=torch.float16) # native dtype of model
+    llmpipe = pipeline("text-generation", model=LLM_MODEL_NAME, device_map="auto", quantization_config=QuantoConfig(weights="float8"))
     mu6palette = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
     mu6palette_to_int = torch.zeros((128,), dtype=torch.float32) / 0.0 # all nans, for error detection
     for i, c in enumerate(mu6palette):
@@ -44,6 +45,7 @@ inference_image = inference_image.env(
     retries=3,
     volumes={MODEL_CACHE_PATH: model_cache},
     image=inference_image,
+    max_containers=5,
 )
 class Inference:
     @modal.enter()
