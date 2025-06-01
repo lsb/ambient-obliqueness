@@ -39,19 +39,36 @@ def signup_view(request):
     return render(request, 'signup.html', {'total_users': total_users})
 
 def home_view(request):
-    if request.user.is_authenticated:
-        logout_url = reverse('logout')
-        return render(
-            request,
-            'home-loggedin.html',
-            {
-                'logout_url': logout_url,
-                'conversation_id': str(uuid.uuid4()),
-            },
-            )
-    else:
+    if not request.user.is_authenticated:
         login_url = reverse('login')
         return HttpResponse(f"hello stranger <a href='{login_url}'>login</a>")
+    
+    conv_id = request.GET.get('conversation_id')
+    if not conv_id:
+        # No query parameter: create a new conversation UUID and redirect.
+        new_conv = str(uuid.uuid4())
+        return redirect(reverse('home') + f"?conversation_id={new_conv}")
+    
+    try:
+        conv_uuid = uuid.UUID(conv_id)
+    except ValueError:
+        # Invalid UUID: generate a new one and redirect.
+        new_conv = str(uuid.uuid4())
+        return redirect(f"?conversation_id={new_conv}")
+    
+    # Check if any AudioFrame for this conversation belongs to a different user.
+    conflict = AudioFrame.objects.filter(conversation_id=conv_uuid).exclude(user=request.user).exists()
+    
+    if conflict:
+        # If unauthorized, render the unauthorized page.
+        logout_url = reverse('logout')
+        return HttpResponse(f"this isn't your conversation. <a href='{logout_url}'>log out</a>", context)
+    
+    context = {
+        'logout_url': reverse('logout'),
+        'conversation_id': conv_id,
+    }
+    return render(request, 'home-loggedin.html', context)
 
 def logout_view(request):
     logout(request)
