@@ -2,6 +2,10 @@ import torch
 # from gpu_models import Inference
 import modal
 infer = modal.Cls.from_name("lsb-ambient-research-accelerated-models", "Inference")
+slowasr = infer.transcribe.remote
+summarizer = infer.summarize.remote
+
+
 
 
 import django
@@ -15,7 +19,6 @@ import time
 # --- Extracted Constants ---
 FAST_TRANSCRIPTION_FRAMES = 58
 FAST_TRANSCRIPTION_DURATION_SEC = 29
-SUMMARY_THRESHOLD_SEC = 5
 
 app = Celery('myproject', broker='redis://localhost:6379/0')
 
@@ -51,7 +54,11 @@ def mu_float32_to_string(mu_floats):
 
 @shared_task()
 def transcribe_audio_frame(audio_frame_id):
-    slowasr = infer.transcribe.remote
+
+    def garbage_silence_detection(mu6):
+        return set(mu6) != {84, 85, 86, 87, 88, 89}
+    
+
 
     try:
         audio_frame = AudioFrame.objects.get(id=audio_frame_id)
@@ -70,19 +77,19 @@ def transcribe_audio_frame(audio_frame_id):
     frames = list(reversed(frames))
     # Concatenate their audio_data as a string.
     audio_data_str = b''.join([frame.audio_data for frame in frames])
+
     # Run slowasr() on the raw audio data string.
-    transcription_result = slowasr(audio_data_str)['text'] # todo: handle errors and empty results
+    transcription_result = slowasr(audio_data_str)['text'] if garbage_silence_detection(audio_data_str) else ""
     # Update the transcription record with the result for both fast and slow transcriptions.
     transcription_record.fast_transcription = transcription_result
     transcription_record.slow_transcription = transcription_result
     transcription_record.save()
     # Trigger the summarization task.
     summarize_conversation.delay(audio_frame.id)
-    return f"Transcription completed: #{transcription_result}"
+    return f"Transcription completed: {transcription_result}, sound levels {len(set(audio_data_str))}"
 
 @shared_task()
 def summarize_conversation(audio_frame_id):
-    summarizer = infer.summarize.remote
 
     print(f"Starting summarization for audio frame {audio_frame_id}")
     # Retrieve the current audio frame and its conversation.
