@@ -54,7 +54,9 @@
       console.log(`max = ${max.toFixed(4)}  sd = ${sd.toFixed(4)}`);
       const mu6frame = frame.map(i => mu6encoder(i));
       const mu6string = mu6frame.map(x => mupalette[x]).join('');
-      console.log({ mu6string, mu6frame, frame });
+      // Get the set of unique values from the mu6 frame as an array.
+      // const uniqueMu6Frame = [...new Set(mu6frame)];
+      // console.log({ mu6string, mu6frame, uniqueMu6Frame, frame });
       
       // Prepare form data to send
       const clientTimestamp = new Date().toISOString();
