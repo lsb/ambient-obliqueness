@@ -1,149 +1,89 @@
 import torch
-from transformers import pipeline
-device = "cuda" if torch.cuda.is_available() else "cpu"
-slowasr = pipeline("automatic-speech-recognition", model="openai/whisper-large-v3-turbo", device=device, torch_dtype=torch.float32)
-fastasr = slowasr # whisper tiny is not accurate enough
-fastasr = pipeline("automatic-speech-recognition", model="openai/whisper-base", device=device, torch_dtype=torch.float32)
+# from gpu_models import Inference
+import modal
+infer = modal.Cls.from_name("lsb-ambient-research-accelerated-models", "Inference")
 
-# New: text generation pipeline for summarization
-from transformers import pipeline as text_pipeline
-summarizer = text_pipeline("text-generation", model="Qwen/Qwen3-0.6B", device=device, torch_dtype=torch.float32)
 
 import django
 django.setup()
 from celery import Celery, shared_task
-import numpy as np
-import math
 from app.models import Transcription, ConversationAnalysis, AudioFrame
 import json
 import datetime
 import time
 
 # --- Extracted Constants ---
-FAST_TRANSCRIPTION_FRAMES = 40
-FAST_TRANSCRIPTION_DURATION_SEC = 20
-SLOW_TRANSCRIPTION_THRESHOLD_SEC = 30
+FAST_TRANSCRIPTION_FRAMES = 58
+FAST_TRANSCRIPTION_DURATION_SEC = 29
 SUMMARY_THRESHOLD_SEC = 5
 
 app = Celery('myproject', broker='redis://localhost:6379/0')
 
 mu6palette = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
-mu6palette_to_int = np.zeros((128,), dtype=np.float32) / 0.0 # all nans, for error detection
+mu6palette_to_int = torch.zeros((128,), dtype=torch.float32) / 0.0 # all nans, for error detection
 for i, c in enumerate(mu6palette):
     mu6palette_to_int[c] = i
 
+mu6int_to_palette = torch.tensor(list(mu6palette))
+
 def mu6decode(x_mu):
     x = ((x_mu / 63) * 2.0) - 1.0
-    x = np.sign(x) * (np.exp(np.abs(x) * np.log1p(63)) - 1.0) / 63
+    x = torch.sign(x) * (torch.exp(torch.abs(x) * torch.log1p(torch.tensor(63))) - 1.0) / 63
     return x
 
 def mu_string_to_float32(mu_string):
-    mu_string = np.array(list(mu_string), dtype=np.int32)
+    mu_string = torch.tensor(list(mu_string), dtype=torch.int32)
     # now that we have a string of bytes, index into the palette for each byte
     mu_bytes = mu6palette_to_int[mu_string]
     mu_floats = mu6decode(mu_bytes)
-    if np.any(np.isnan(mu_floats)):
+    if torch.any(torch.isnan(mu_floats)):
         return None
     return mu_floats
 
+def mu6encode(x):
+    return torch.floor((torch.sign(x) * torch.log1p(63 * torch.abs(x)) / torch.log1p(torch.tensor(63)) + 1) / 2 * 63 + 0.5).to(torch.int32)
+
+def mu_float32_to_string(mu_floats):
+    mu_floats = mu_floats.to(torch.float32)
+    mu_bytes = mu6encode(mu_floats)
+    mu_string = bytes(mu6int_to_palette[mu_bytes].tolist())
+    return mu_string
+
 @shared_task()
 def transcribe_audio_frame(audio_frame_id):
-    time_start = time.time()
+    slowasr = infer.transcribe.remote
+
     try:
         audio_frame = AudioFrame.objects.get(id=audio_frame_id)
     except AudioFrame.DoesNotExist:
         return "AudioFrame not found"
-    
     # Immediately create a transcription record with null transcriptions.
     transcription_record = Transcription.objects.create(
         audio_frame=audio_frame,
         fast_transcription=None,
         slow_transcription=None,
     )
-    
-    # Skip transcription if this isn't the most recent audio frame.
-    if audio_frame != AudioFrame.objects.filter(
-        conversation_id=audio_frame.conversation_id,
-    ).order_by('-client_timestamp').first():
-        return "Not the most recent audio frame for this conversation_id"
-    
-    # FAST TRANSCRIPTION:
-    # Get past FAST_TRANSCRIPTION_FRAMES within the last FAST_TRANSCRIPTION_DURATION_SEC seconds.
-    time_lower_bound = audio_frame.client_timestamp - datetime.timedelta(seconds=FAST_TRANSCRIPTION_DURATION_SEC)
-    fast_frames = AudioFrame.objects.filter(
-        user=audio_frame.user,
-        client_timestamp__gte=time_lower_bound,
-        client_timestamp__lte=audio_frame.client_timestamp,
+    # Get the last FAST_TRANSCRIPTION_FRAMES frames (58 frames) in ascending order.
+    frames = AudioFrame.objects.filter(
+        conversation_id=audio_frame.conversation_id
     ).order_by('-client_timestamp')[:FAST_TRANSCRIPTION_FRAMES]
-    if not fast_frames or len(fast_frames) == 0:
-        return "No audio frames for fast transcription"
-    fast_frames = reversed(fast_frames)
-    fast_audio_data = [a.audio_data for a in fast_frames]
-    fast_audio_data = b''.join(fast_audio_data)
-    fast_audio_data = mu_string_to_float32(fast_audio_data)
-    if fast_audio_data is None:
-        return "Decoding error: NaN values found in fast audio data"
-    time_fast_data_decoded = time.time()
-    
-    fast_result = fastasr(fast_audio_data)['text']
-    time_fast_data_transcribed = time.time()
-    print("Fast transcription result:", fast_result)
-    
-    # Update the current transcription record with fast transcription.
-    transcription_record.fast_transcription = str(fast_result)
+    frames = list(reversed(frames))
+    # Concatenate their audio_data as a string.
+    audio_data_str = b''.join([frame.audio_data for frame in frames])
+    # Run slowasr() on the raw audio data string.
+    transcription_result = slowasr(audio_data_str)['text'] # todo: handle errors and empty results
+    # Update the transcription record with the result for both fast and slow transcriptions.
+    transcription_record.fast_transcription = transcription_result
+    transcription_record.slow_transcription = transcription_result
     transcription_record.save()
-    print("Fast transcription time:", int(1000 * (time_fast_data_transcribed - time_fast_data_decoded)), "ms")
-    
-    # SLOW TRANSCRIPTION:
-    # Check if there is any slow transcription in the past SLOW_TRANSCRIPTION_THRESHOLD_SEC seconds.
-    recent_slow = Transcription.objects.filter(
-        audio_frame__conversation_id=audio_frame.conversation_id,
-        slow_transcription__isnull=False,
-        audio_frame__client_timestamp__gte=audio_frame.client_timestamp - datetime.timedelta(seconds=SLOW_TRANSCRIPTION_THRESHOLD_SEC)
-    ).exists()
-    if not recent_slow:
-        # Find the oldest audio frame with a null slow transcription in this conversation.
-        null_slow_qs = Transcription.objects.filter(
-            audio_frame__conversation_id=audio_frame.conversation_id,
-            slow_transcription__isnull=True
-        ).order_by('audio_frame__client_timestamp')
-        if null_slow_qs.exists():
-            oldest_ts = null_slow_qs.first().audio_frame.client_timestamp
-            # Gather all transcription records from oldest_ts up to current.
-            slow_trans_qs = Transcription.objects.filter(
-                audio_frame__conversation_id=audio_frame.conversation_id,
-                audio_frame__client_timestamp__gte=oldest_ts,
-                audio_frame__client_timestamp__lte=audio_frame.client_timestamp,
-            ).order_by('audio_frame__client_timestamp')
-            # Mark these records' slow transcriptions as empty string to indicate they're being processed.
-            slow_trans_qs.update(slow_transcription="")
-            # Concatenate the audio data from these audio frames.
-            frames_for_slow = AudioFrame.objects.filter(
-                conversation_id=audio_frame.conversation_id,
-                client_timestamp__gte=oldest_ts,
-                client_timestamp__lte=audio_frame.client_timestamp,
-            ).order_by('client_timestamp')
-            slow_audio_data = [a.audio_data for a in frames_for_slow]
-            slow_audio_data = b''.join(slow_audio_data)
-            slow_audio_data = mu_string_to_float32(slow_audio_data)
-            if slow_audio_data is not None:
-                slow_result = slowasr(slow_audio_data, return_timestamps=True)['text']
-                print("Slow transcription result:", slow_result)
-                # Update all related transcription records with the slow result for both fast and slow.
-                slow_trans_qs.update(slow_transcription=slow_result, fast_transcription=slow_result)
-            else:
-                print("Decoding error: NaN values in slow audio data")
-
-    # Remove the conversation analysis check here.
-    # Instead, call summarize_conversation with the audio_frame id.
+    # Trigger the summarization task.
     summarize_conversation.delay(audio_frame.id)
-    
-    time_end = time.time()
-    print("Total transcription time:", int(1000 * (time_end - time_start)), "ms")
-    return "Transcription completed"
+    return f"Transcription completed: #{transcription_result}"
 
 @shared_task()
 def summarize_conversation(audio_frame_id):
+    summarizer = infer.summarize.remote
+
     print(f"Starting summarization for audio frame {audio_frame_id}")
     # Retrieve the current audio frame and its conversation.
     try:
@@ -175,8 +115,8 @@ def summarize_conversation(audio_frame_id):
         audio_frame__conversation_id=conversation_id,
         fast_transcription__isnull=False
     ).order_by('-audio_frame__client_timestamp')
-    # Select one out of every 5 transcriptions (up to 1000), then reverse them so oldest come first.
-    selected = list(reversed(transcriptions[::5][:1000]))
+    # Select one out of every 20 transcriptions (up to 1000), then reverse them so oldest come first.
+    selected = list(reversed(transcriptions[::20][:1000]))
     texts = [t.slow_transcription or t.fast_transcription for t in selected]
     if not texts:
         new_record.delete()  # cleanup and abort if there are no valid transcriptions.
@@ -199,7 +139,6 @@ def summarize_conversation(audio_frame_id):
             {"role": "user", "content": text_json},
             {"role": "assistant", "content": '{"summary":'}
         ],
-        max_new_tokens=40000,
     )[0]['generated_text'][-1]['content']
     print(f"Summary result: {summary_output}, text json of the conversation is {len(text_json)} characters long, with {len(texts)} snippets.")
     new_record.analysis = summary_output
